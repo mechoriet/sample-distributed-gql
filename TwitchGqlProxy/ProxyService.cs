@@ -421,14 +421,9 @@ public sealed class ProxyService : IAsyncDisposable
             pending = _pendingCount;
         }
 
-        var pct = limit > 0 ? current * 100.0 / limit : 0;
-        var barLen = 20;
-        var filled = (int)(pct * barLen / 100);
-        var bar = new string('█', filled) + new string('░', barLen - filled);
-
         _logger.LogInformation(
-            "GQL pressure: [{Bar}] {Current}/{Limit} ({Pct:F0}%)  pending-batch={Pending}",
-            bar, current, limit, pct, pending);
+            "GQL pressure: {Current}/{Limit}  pending-batch={Pending}",
+            current, limit, pending);
     }
 
     private sealed record BatchItem(string Channel, string ResponseChannel, JsonElement Payload);
