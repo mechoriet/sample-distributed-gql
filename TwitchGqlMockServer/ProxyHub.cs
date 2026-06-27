@@ -29,6 +29,36 @@ public class ProxyHub : Hub
         return Task.CompletedTask;
     }
 
+    [HubMethodName("ProxyShutdown")]
+    public async Task OnProxyShutdown(JsonElement pendingOps)
+    {
+        var connectionId = Context.ConnectionId;
+        _logger.LogWarning("Proxy shutting down: {Id}", connectionId);
+
+        if (pendingOps.ValueKind != JsonValueKind.Array || pendingOps.GetArrayLength() == 0)
+        {
+            _logger.LogInformation("No pending operations to refire");
+            return;
+        }
+
+        // Find another connected client (not the one shutting down)
+        var otherClient = ConnectedClients.Keys.FirstOrDefault(id => id != connectionId);
+        if (otherClient is null)
+        {
+            _logger.LogWarning("No other connected clients to refire operations to");
+            return;
+        }
+
+        foreach (var op in pendingOps.EnumerateArray())
+        {
+            var channel = op.GetProperty("channel").GetString();
+            if (channel is null) continue;
+
+            _logger.LogInformation("Refiring operation on {Channel} to {TargetId}", channel, otherClient);
+            await Clients.Client(otherClient).SendAsync(channel, op.GetProperty("payload"));
+        }
+    }
+
     private void LogResponse(string signalrChannel, string raw)
     {
         try

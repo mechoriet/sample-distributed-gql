@@ -20,6 +20,10 @@ public sealed class ProxyService : IAsyncDisposable
     private int _pendingCount;
     private Timer? _debounceTimer;
     private Timer? _pressureTimer;
+    private Timer? _rateLimitDrainTimer;
+
+    private readonly Queue<(int Count, TaskCompletionSource Tcs)> _priorityWaiters = new();
+    private readonly Queue<(int Count, TaskCompletionSource Tcs)> _normalWaiters = new();
 
     private static readonly string[] Channels = ["backend.communityTab", "backend.ViewerCards"];
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -86,6 +90,9 @@ public sealed class ProxyService : IAsyncDisposable
     {
         _pressureTimer?.Dispose();
         _pressureTimer = null;
+        _rateLimitDrainTimer?.Dispose();
+        _rateLimitDrainTimer = null;
+
         List<BatchItem>? pendingBatch;
         lock (_flushLock)
         {
@@ -97,6 +104,35 @@ public sealed class ProxyService : IAsyncDisposable
         {
             await FlushBatchAsync(pendingBatch);
         }
+
+        // Resolve any stuck rate-limit waiters so they don't hang forever
+        lock (_rateLimitLock)
+        {
+            while (_priorityWaiters.Count > 0)
+            {
+                var (_, tcs) = _priorityWaiters.Dequeue();
+                tcs.TrySetCanceled();
+            }
+            while (_normalWaiters.Count > 0)
+            {
+                var (_, tcs) = _normalWaiters.Dequeue();
+                tcs.TrySetCanceled();
+            }
+        }
+
+        try
+        {
+            if (_hubConnection.State == HubConnectionState.Connected)
+            {
+                await _hubConnection.InvokeAsync("ProxyShutdown", Array.Empty<object>());
+                _logger.LogInformation("Sent shutdown signal to MockServer");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to send shutdown signal");
+        }
+
         await _hubConnection.StopAsync();
     }
 
@@ -136,7 +172,7 @@ public sealed class ProxyService : IAsyncDisposable
                 {
                     items.Add(new BatchItem(signalrChannel, twitchChannel, operation));
                 }
-                _ = FlushBatchAsync(items, fanOut);
+                _ = FlushBatchAsync(items, fanOut, isPriority: true);
                 _logger.LogInformation(
                     "  → CommunityTab [{Channel}] flushed immediately (fan-out={FanOut})",
                     twitchChannel, fanOut);
@@ -234,7 +270,7 @@ public sealed class ProxyService : IAsyncDisposable
         return items;
     }
 
-    private async Task FlushBatchAsync(List<BatchItem> batch, int rateLimitCost = 1)
+    private async Task FlushBatchAsync(List<BatchItem> batch, int rateLimitCost = 1, bool isPriority = false)
     {
         var stopwatch = ValueStopwatch.StartNew();
 
@@ -249,7 +285,7 @@ public sealed class ProxyService : IAsyncDisposable
             var requestBody = JsonSerializer.Serialize(requestArray, JsonOptions);
             var content = new StringContent(requestBody, Encoding.UTF8, "application/json");
 
-            await EnforceRateLimit(rateLimitCost);
+            await EnforceRateLimit(rateLimitCost, isPriority);
 
             var response = await _httpClient.PostAsync(_config.GqlEndpoint, content);
             var responseBody = await response.Content.ReadAsStringAsync();
@@ -371,46 +407,118 @@ public sealed class ProxyService : IAsyncDisposable
     private readonly Queue<DateTime> _rateLimitTimestamps = new();
     private readonly object _rateLimitLock = new();
 
-    private async Task EnforceRateLimit(int count = 1)
+    private async Task EnforceRateLimit(int count, bool isPriority)
     {
         if (_config.RateLimitPerMinute <= 0)
             return;
 
-        while (true)
+        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        lock (_rateLimitLock)
         {
-            DateTime delayUntil = DateTime.MinValue;
-            int currentCount;
-            lock (_rateLimitLock)
+            var now = DateTime.UtcNow;
+            var cutoff = now.AddMinutes(-1);
+            while (_rateLimitTimestamps.Count > 0 && _rateLimitTimestamps.Peek() < cutoff)
             {
-                var now = DateTime.UtcNow;
-                var cutoff = now.AddMinutes(-1);
-
-                while (_rateLimitTimestamps.Count > 0 && _rateLimitTimestamps.Peek() < cutoff)
-                {
-                    _rateLimitTimestamps.Dequeue();
-                }
-
-                currentCount = _rateLimitTimestamps.Count;
-                var available = _config.RateLimitPerMinute - currentCount;
-                if (available >= count)
-                {
-                    for (int i = 0; i < count; i++)
-                    {
-                        _rateLimitTimestamps.Enqueue(now);
-                    }
-                    return;
-                }
-
-                var oldest = _rateLimitTimestamps.Peek();
-                delayUntil = oldest.AddMinutes(1);
+                _rateLimitTimestamps.Dequeue();
             }
 
-            var delay = delayUntil - DateTime.UtcNow;
-            if (delay > TimeSpan.Zero)
+            var available = _config.RateLimitPerMinute - _rateLimitTimestamps.Count;
+
+            // Acquire immediately if slots available and no higher-priority waiters ahead
+            if (available >= count && (!isPriority || _priorityWaiters.Count == 0))
             {
-                _logger.LogWarning("Rate limit reached ({Current}/{Limit}), need {Count} slots, delaying {DelayMs}ms",
-                    currentCount, _config.RateLimitPerMinute, count, delay.TotalMilliseconds);
-                await Task.Delay(delay);
+                for (int i = 0; i < count; i++)
+                {
+                    _rateLimitTimestamps.Enqueue(now);
+                }
+                return;
+            }
+
+            // Queue the waiter — priority goes to _priorityWaiters
+            var entry = (count, tcs);
+            if (isPriority)
+                _priorityWaiters.Enqueue(entry);
+            else
+                _normalWaiters.Enqueue(entry);
+
+            // Ensure the drain timer is running
+            StartDrainTimer();
+        }
+
+        // Wait until the rate limiter grants us a slot
+        await tcs.Task;
+    }
+
+    private void StartDrainTimer()
+    {
+        // Only start if waiters exist and timer isn't already running
+        if (_rateLimitDrainTimer is not null) return;
+        if (_priorityWaiters.Count == 0 && _normalWaiters.Count == 0) return;
+
+        // Tick every 100ms to drain expired timestamps and signal waiters
+        _rateLimitDrainTimer = new Timer(_ =>
+        {
+            DrainRateLimitQueue();
+        }, null, 100, 100);
+    }
+
+    private void DrainRateLimitQueue()
+    {
+        lock (_rateLimitLock)
+        {
+            var now = DateTime.UtcNow;
+            var cutoff = now.AddMinutes(-1);
+            while (_rateLimitTimestamps.Count > 0 && _rateLimitTimestamps.Peek() < cutoff)
+            {
+                _rateLimitTimestamps.Dequeue();
+            }
+
+            // Serve priority waiters first
+            int signaled = 0;
+            while (_priorityWaiters.Count > 0)
+            {
+                var (cnt, tcs) = _priorityWaiters.Peek();
+                var available = _config.RateLimitPerMinute - _rateLimitTimestamps.Count;
+                if (available < cnt) break;
+
+                _priorityWaiters.Dequeue();
+                for (int i = 0; i < cnt; i++)
+                {
+                    _rateLimitTimestamps.Enqueue(now);
+                }
+                tcs.SetResult();
+                signaled++;
+            }
+
+            // Then serve normal waiters
+            while (_normalWaiters.Count > 0)
+            {
+                var (cnt, tcs) = _normalWaiters.Peek();
+                var available = _config.RateLimitPerMinute - _rateLimitTimestamps.Count;
+                if (available < cnt) break;
+
+                _normalWaiters.Dequeue();
+                for (int i = 0; i < cnt; i++)
+                {
+                    _rateLimitTimestamps.Enqueue(now);
+                }
+                tcs.SetResult();
+                signaled++;
+            }
+
+            // Stop the drain timer if no waiters remain
+            if (_priorityWaiters.Count == 0 && _normalWaiters.Count == 0)
+            {
+                _rateLimitDrainTimer?.Dispose();
+                _rateLimitDrainTimer = null;
+            }
+
+            if (signaled > 0)
+            {
+                _logger.LogInformation(
+                    "Rate limit: signaled {Signaled} waiters ({Priority}/{Normal} queued)",
+                    signaled, _priorityWaiters.Count, _normalWaiters.Count);
             }
         }
     }
@@ -427,6 +535,8 @@ public sealed class ProxyService : IAsyncDisposable
         int current;
         int limit;
         int pending;
+        int priorityWaiters;
+        int normalWaiters;
         lock (_rateLimitLock)
         {
             var now = DateTime.UtcNow;
@@ -437,6 +547,8 @@ public sealed class ProxyService : IAsyncDisposable
             }
             current = _rateLimitTimestamps.Count;
             limit = _config.RateLimitPerMinute;
+            priorityWaiters = _priorityWaiters.Count;
+            normalWaiters = _normalWaiters.Count;
         }
         lock (_flushLock)
         {
@@ -444,8 +556,8 @@ public sealed class ProxyService : IAsyncDisposable
         }
 
         _logger.LogInformation(
-            "GQL pressure: {Current}/{Limit}  pending-batch={Pending}",
-            current, limit, pending);
+            "GQL pressure: {Current}/{Limit}  pending-batch={Pending}  waiters(P={Priority}/N={Normal})",
+            current, limit, pending, priorityWaiters, normalWaiters);
     }
 
     private sealed record BatchItem(string Channel, string ResponseChannel, JsonElement Payload);
