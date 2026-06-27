@@ -137,7 +137,7 @@ public sealed class ProxyService : IAsyncDisposable
                 {
                     items.Add(new BatchItem(signalrChannel, twitchChannel, operation));
                 }
-                _ = FlushBatchAsync(items);
+                _ = FlushBatchAsync(items, fanOut);
                 _logger.LogInformation(
                     "  → CommunityTab [{Channel}] flushed immediately (fan-out={FanOut})",
                     twitchChannel, fanOut);
@@ -235,7 +235,7 @@ public sealed class ProxyService : IAsyncDisposable
         return items;
     }
 
-    private async Task FlushBatchAsync(List<BatchItem> batch)
+    private async Task FlushBatchAsync(List<BatchItem> batch, int rateLimitCost = 1)
     {
         var stopwatch = ValueStopwatch.StartNew();
 
@@ -250,7 +250,7 @@ public sealed class ProxyService : IAsyncDisposable
             var requestBody = JsonSerializer.Serialize(requestArray, JsonOptions);
             var content = new StringContent(requestBody, Encoding.UTF8, "application/json");
 
-            await EnforceRateLimit(batch.Count);
+            await EnforceRateLimit(rateLimitCost);
 
             var response = await _httpClient.PostAsync(_config.GqlEndpoint, content);
             var responseBody = await response.Content.ReadAsStringAsync();
