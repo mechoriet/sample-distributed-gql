@@ -382,7 +382,7 @@ public sealed record ProxyConfig
     public string SignalrHubUrl { get; init; } = "http://localhost:5000/hub";
     public string GqlEndpoint { get; init; } = "https://gql.twitch.tv/gql";
     public string ClientId { get; init; } = "";
-    public string[] Channels { get; init; } = ["backend.communityTab", "backend.UserCards"];
+    public string[] Channels { get; init; } = ["backend.communityTab", "backend.ViewerCards"];
     public int MinBatchSize { get; init; } = 5;
     public int MaxBatchSize { get; init; } = 20;
     public int DebounceMs { get; init; } = 300;

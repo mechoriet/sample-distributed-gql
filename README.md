@@ -32,7 +32,7 @@ A SignalR hub that simulates Twitch GQL responses. It accepts proxy client conne
   │  │             │     │                          │    │
   │  │ OnConnected │────►│  Reads stdin commands:   │    │
   │  │ OnMessage   │     │   ct <ch>   ──► CommunityTab │
-  │  │             │     │   uc <ch>   ──► UserCards     │
+  │  │             │     │   uc <ch>   ──► ViewerCards     │
   │  │ Track       │     │   batch N   ──► Batch Viewer  │
   │  │ clients in  │     │                Card ops       │
   │  │ Concurrent  │     │                          │    │
@@ -88,7 +88,7 @@ A console app that connects to the MockServer's SignalR hub, listens for GQL ope
        │                                │
        │  ─── Subscribe to channels ──► │
        │     "backend.communityTab"     │
-       │     "backend.UserCards"        │
+       │     "backend.ViewerCards"        │
        │                                │
        │  Hub registers OnConnected     │
        │  adds client to                │
@@ -124,7 +124,7 @@ A console app that connects to the MockServer's SignalR hub, listens for GQL ope
        │                 │                            │
   SendAsync(             │                            │
    "backend              │                            │
-    .UserCards") ───────►│                            │
+    .ViewerCards") ───────►│                            │
                          │                            │
        │           Enqueue to batch queue              │
        │           PendingCount ++                     │
@@ -133,7 +133,7 @@ A console app that connects to the MockServer's SignalR hub, listens for GQL ope
        │                 │                            │
   SendAsync(             │                            │
    "backend              │                            │
-    .UserCards") ───────►│                            │
+    .ViewerCards") ───────►│                            │
        │                 │                            │
        │           PendingCount == 20                  │
        │           DrainQueue → List<BatchItem>        │
@@ -145,7 +145,7 @@ A console app that connects to the MockServer's SignalR hub, listens for GQL ope
        │           Fan out responses back              │
   InvokeAsync( ◄────────│  via InvokeAsync             │
    "backend              │  per item                    │
-    .UserCards")         │                            │
+    .ViewerCards")         │                            │
 ```
 
 ---
@@ -194,7 +194,7 @@ A console app that connects to the MockServer's SignalR hub, listens for GQL ope
 ### Why Two SignalR Channels?
 
 - **`backend.communityTab`** — flushed immediately (single operation per request)
-- **`backend.UserCards`** — queued, batched up to `MaxBatchSize`, then flushed
+- **`backend.ViewerCards`** — queued, batched up to `MaxBatchSize`, then flushed
 
 The `responseChannel` in each `BatchItem` stores which SignalR method to use when sending the response back. This decouples the incoming notification channel from the outgoing response channel.
 
@@ -229,7 +229,7 @@ If the limit is hit, the proxy delays until a slot opens.
 | `signalrHubUrl` | `SIGNALR_HUB_URL` | `http://localhost:5000/hub` | MockServer SignalR endpoint |
 | `gqlEndpoint` | `GQL_ENDPOINT` | `https://gql.twitch.tv/gql` | Twitch GQL API |
 | `clientId` | `CLIENT_ID` | **(required)** | Twitch Client-Id header |
-| `channels` | `CHANNELS` | `backend.communityTab,backend.UserCards` | SignalR channels to listen on |
+| `channels` | `CHANNELS` | `backend.communityTab,backend.ViewerCards` | SignalR channels to listen on |
 | `minBatchSize` | `MIN_BATCH_SIZE` | `5` | Min batch before flush (debounce trigger) |
 | `maxBatchSize` | `MAX_BATCH_SIZE` | `20` | Max operations per GQL request |
 | `debounceMs` | `DEBOUNCE_MS` | `300` | Debounce timer ms |
@@ -252,7 +252,7 @@ Then type commands at the prompt:
 | Command | Example | Action |
 |---|---|---|
 | `ct <channel>` | `ct forsen` | Sends CommunityTab op to a random proxy |
-| `uc <channel>` | `uc xqc` | Sends UserCards op to a random proxy |
+| `uc <channel>` | `uc xqc` | Sends ViewerCards op to a random proxy |
 | `batch <n> [ch]` | `batch 50 forsen` | Sends n ViewerCard operations |
 | `q` | `q` | Quit |
 

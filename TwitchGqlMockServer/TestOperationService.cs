@@ -17,8 +17,8 @@ public class TestOperationService : BackgroundService
     {
         _logger.LogInformation("Mock server ready. Commands:");
         _logger.LogInformation("  ct <channel>         — Send CommunityTab to a random connected proxy");
-        _logger.LogInformation("  uc <channel>          — Send UserCards to a random connected proxy");
-        _logger.LogInformation("  batch <n> [channel]   — Send n UserCards ops (default: forsen)");
+        _logger.LogInformation("  uc <channel>          — Send ViewerCards to a random connected proxy");
+        _logger.LogInformation("  batch <n> [channel]   — Send n ViewerCards ops (default: forsen)");
         _logger.LogInformation("  q                     — Quit");
         _logger.LogInformation("");
 
@@ -59,7 +59,7 @@ public class TestOperationService : BackgroundService
             case "uc":
             {
                 var channel = parts.Length > 1 ? parts[1] : "testchannel";
-                await SendUserCards(channel, ct);
+                await SendViewerCards(channel, ct);
                 break;
             }
 
@@ -69,9 +69,9 @@ public class TestOperationService : BackgroundService
                 var baseChannel = parts.Length > 2 ? parts[2] : "forsen";
                 for (int i = 0; i < count; i++)
                 {
-                    await SendUserCardsRaw($"user{i}", baseChannel, ct);
+                    await SendViewerCardsRaw($"user{i}", baseChannel, ct);
                 }
-                _logger.LogInformation("Sent {Count} UserCards operations (channelLogin={Login})",
+                _logger.LogInformation("Sent {Count} ViewerCards operations (channelLogin={Login})",
                     count, baseChannel);
                 break;
             }
@@ -82,19 +82,19 @@ public class TestOperationService : BackgroundService
         }
     }
 
-    private async Task SendUserCardsRaw(string username, string channelLogin, CancellationToken ct)
+    private async Task SendViewerCardsRaw(string username, string channelLogin, CancellationToken ct)
     {
         var clientId = PickRandomClient();
         if (clientId is null) return;
 
-        await _hubContext.Clients.Client(clientId).SendAsync("backend.UserCards", new
+        await _hubContext.Clients.Client(clientId).SendAsync("backend.ViewerCards", new
         {
             operation = "ViewerCard",
             channel = channelLogin,
             username,
         }, ct);
 
-        _logger.LogInformation("→ backend.UserCards channel={Channel} username={User} to client {Id}",
+        _logger.LogInformation("→ backend.ViewerCards channel={Channel} username={User} to client {Id}",
             channelLogin, username, clientId);
     }
 
@@ -125,8 +125,8 @@ public class TestOperationService : BackgroundService
         _logger.LogInformation("→ backend.communityTab channel={Channel} to client {Id}", channelName, clientId);
     }
 
-    private async Task SendUserCards(string channelName, CancellationToken ct)
+    private async Task SendViewerCards(string channelName, CancellationToken ct)
     {
-        await SendUserCardsRaw(channelName, channelName, ct);
+        await SendViewerCardsRaw(channelName, channelName, ct);
     }
 }

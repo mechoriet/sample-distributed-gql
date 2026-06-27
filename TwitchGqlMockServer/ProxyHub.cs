@@ -22,10 +22,10 @@ public class ProxyHub : Hub
         return Task.CompletedTask;
     }
 
-    [HubMethodName("backend.UserCards")]
-    public Task BackendUserCards(string response)
+    [HubMethodName("backend.ViewerCards")]
+    public Task BackendViewerCards(string response)
     {
-        LogResponse("UserCards", response);
+        LogResponse("ViewerCards", response);
         return Task.CompletedTask;
     }
 
