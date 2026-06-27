@@ -65,10 +65,9 @@ public sealed class ProxyService : IAsyncDisposable
 
         foreach (var channel in Channels)
         {
-            var channelCopy = channel;
-            _hubConnection.On(channelCopy, (JsonElement payload) =>
+            _hubConnection.On(channel, (JsonElement payload) =>
             {
-                HandleIncoming(channelCopy, payload);
+                HandleIncoming(channel, payload);
             });
         }
     }
@@ -421,8 +420,6 @@ public sealed class ProxyService : IAsyncDisposable
         await StopAsync();
         _httpClient.Dispose();
         await _hubConnection.DisposeAsync();
-        _debounceTimer?.Dispose();
-        _pressureTimer?.Dispose();
     }
 
     private void LogPressure()
