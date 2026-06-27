@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.SignalR.Client;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
 namespace TwitchGqlProxy;
@@ -387,28 +388,14 @@ public sealed record ProxyConfig
     public int DebounceMs { get; init; } = 300;
     public int RateLimitPerMinute { get; init; } = 5000;
 
-    public static ProxyConfig FromEnvironment()
+    public static ProxyConfig FromConfiguration(IConfiguration configuration)
     {
-        return new ProxyConfig
+        var config = configuration.Get<ProxyConfig>() ?? new ProxyConfig();
+        if (string.IsNullOrEmpty(config.ClientId))
         {
-            SignalrHubUrl = Environment.GetEnvironmentVariable("SIGNALR_HUB_URL")
-                ?? "http://localhost:5000/hub",
-            GqlEndpoint = Environment.GetEnvironmentVariable("GQL_ENDPOINT")
-                ?? "https://gql.twitch.tv/gql",
-            ClientId = Environment.GetEnvironmentVariable("CLIENT_ID")
-                ?? throw new InvalidOperationException("CLIENT_ID environment variable is required"),
-            Channels = Environment.GetEnvironmentVariable("CHANNELS")
-                ?.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
-                ?? ["backend.communityTab", "backend.UserCards"],
-            MinBatchSize = int.TryParse(
-                Environment.GetEnvironmentVariable("MIN_BATCH_SIZE"), out var min) ? min : 5,
-            MaxBatchSize = int.TryParse(
-                Environment.GetEnvironmentVariable("MAX_BATCH_SIZE"), out var max) ? max : 20,
-            DebounceMs = int.TryParse(
-                Environment.GetEnvironmentVariable("DEBOUNCE_MS"), out var dms) ? dms : 300,
-            RateLimitPerMinute = int.TryParse(
-                Environment.GetEnvironmentVariable("RATE_LIMIT"), out var rl) ? rl : 5000,
-        };
+            throw new InvalidOperationException("CLIENT_ID environment variable is required");
+        }
+        return config;
     }
 }
 

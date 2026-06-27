@@ -1,8 +1,15 @@
-﻿using Microsoft.Extensions.DependencyInjection;
+﻿using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using TwitchGqlProxy;
 
-var config = ProxyConfig.FromEnvironment();
+var configuration = new ConfigurationBuilder()
+    .SetBasePath(AppContext.BaseDirectory)
+    .AddJsonFile("appsettings.json", optional: false)
+    .AddEnvironmentVariables()
+    .Build();
+
+var config = ProxyConfig.FromConfiguration(configuration);
 
 var services = new ServiceCollection()
     .AddLogging(builder =>
@@ -14,6 +21,7 @@ var services = new ServiceCollection()
             ? level : LogLevel.Information);
     })
     .AddSingleton(config)
+    .AddSingleton<IConfiguration>(configuration)
     .AddHttpClient<ProxyService>(client =>
     {
         client.Timeout = TimeSpan.FromSeconds(30);
