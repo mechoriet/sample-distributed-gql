@@ -19,6 +19,7 @@ public sealed class ProxyService : IAsyncDisposable
     private readonly object _flushLock = new();
     private int _pendingCount;
     private Timer? _debounceTimer;
+    private Timer? _pressureTimer;
 
     private static readonly string[] Channels = ["backend.communityTab", "backend.ViewerCards"];
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -78,10 +79,14 @@ public sealed class ProxyService : IAsyncDisposable
         await _hubConnection.StartAsync(ct);
         _logger.LogInformation("Connected to SignalR hub, listening on channels: {Channels}",
             string.Join(", ", Channels));
+
+        _pressureTimer = new Timer(_ => LogPressure(), null, TimeSpan.FromSeconds(20), TimeSpan.FromSeconds(20));
     }
 
     public async Task StopAsync()
     {
+        _pressureTimer?.Dispose();
+        _pressureTimer = null;
         List<BatchItem>? pendingBatch;
         lock (_flushLock)
         {
@@ -385,6 +390,38 @@ public sealed class ProxyService : IAsyncDisposable
         _httpClient.Dispose();
         await _hubConnection.DisposeAsync();
         _debounceTimer?.Dispose();
+        _pressureTimer?.Dispose();
+    }
+
+    private void LogPressure()
+    {
+        int current;
+        int limit;
+        int pending;
+        lock (_rateLimitLock)
+        {
+            var now = DateTime.UtcNow;
+            var cutoff = now.AddMinutes(-1);
+            while (_rateLimitTimestamps.Count > 0 && _rateLimitTimestamps.Peek() < cutoff)
+            {
+                _rateLimitTimestamps.Dequeue();
+            }
+            current = _rateLimitTimestamps.Count;
+            limit = _config.RateLimitPerMinute;
+        }
+        lock (_flushLock)
+        {
+            pending = _pendingCount;
+        }
+
+        var pct = limit > 0 ? current * 100.0 / limit : 0;
+        var barLen = 20;
+        var filled = (int)(pct * barLen / 100);
+        var bar = new string('█', filled) + new string('░', barLen - filled);
+
+        _logger.LogInformation(
+            "GQL pressure: [{Bar}] {Current}/{Limit} ({Pct:F0}%)  pending-batch={Pending}",
+            bar, current, limit, pct, pending);
     }
 
     private sealed record BatchItem(string Channel, string ResponseChannel, JsonElement Payload);
