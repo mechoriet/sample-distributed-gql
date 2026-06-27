@@ -174,7 +174,7 @@ public sealed class ProxyService : IAsyncDisposable
                 throw new InvalidOperationException($"Unknown operation: {operationName}");
         }
 
-        // ViewerCard: batch up to 20 per request
+        // ViewerCard: batch with debounce
         var item = new BatchItem(signalrChannel, twitchChannel, operation);
         List<BatchItem>? batchToFlush = null;
 
@@ -182,18 +182,43 @@ public sealed class ProxyService : IAsyncDisposable
         {
             _queue.Enqueue(item);
             _pendingCount++;
-            _logger.LogInformation("  + ViewerCard [{Channel}] queued ({Pending}/20)", twitchChannel, _pendingCount);
+            _logger.LogInformation("  + ViewerCard [{Channel}] queued ({Pending}/{Max})",
+                twitchChannel, _pendingCount, _config.MaxBatchSize);
 
             if (_pendingCount >= _config.MaxBatchSize)
             {
+                _debounceTimer?.Dispose();
+                _debounceTimer = null;
                 batchToFlush = DrainQueue();
                 _logger.LogInformation("  → Batch full, flushing {Count} ops", batchToFlush.Count);
+            }
+            else if (_pendingCount >= _config.MinBatchSize)
+            {
+                _debounceTimer?.Dispose();
+                _debounceTimer = new Timer(_ => OnDebounceFlush(), null, _config.DebounceMs, Timeout.Infinite);
+                _logger.LogInformation("  ⏱ Debounce timer set ({DebounceMs}ms)",
+                    _config.DebounceMs);
             }
         }
 
         if (batchToFlush is { Count: > 0 })
         {
             _ = FlushBatchAsync(batchToFlush);
+        }
+    }
+
+    private void OnDebounceFlush()
+    {
+        List<BatchItem>? batch;
+        lock (_flushLock)
+        {
+            if (_pendingCount == 0) return;
+            batch = DrainQueue();
+        }
+        if (batch is { Count: > 0 })
+        {
+            _logger.LogInformation("  → Debounce timer fired, flushing {Count} ops", batch.Count);
+            _ = FlushBatchAsync(batch);
         }
     }
 
