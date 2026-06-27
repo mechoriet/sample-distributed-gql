@@ -16,6 +16,24 @@ A pair of .NET applications that relay and batch Twitch GraphQL operations via S
 
 ---
 
+## Running
+
+Start the MockServer first, then the Proxy.
+
+```
+# Terminal 1 — MockServer
+cd TwitchGqlMockServer
+dotnet run
+
+# Terminal 2 — Proxy
+cd TwitchGqlProxy
+dotnet run
+```
+
+The Proxy connects to the MockServer's SignalR hub at `http://localhost:5000/hub`. Once connected, type test commands into the MockServer terminal to trigger GQL operations through the Proxy.
+
+---
+
 ## Architecture
 
 ### TwitchGqlMockServer
@@ -222,20 +240,73 @@ If the limit is hit, the proxy delays until a slot opens.
 
 ---
 
+## Authentication
+
+The MockServer supports optional bearer-token authentication for the SignalR hub.
+
+```
+  Proxy                          MockServer
+    │                                │
+    │  GET /hub (negotiate)          │
+    │  Authorization: Bearer <token> │
+    │──────────────────────────────► │
+    │                                │
+    │  ◄── 401 (if token wrong/missing and auth is configured)
+    │                                │
+    │  ◄── 200 + connection (if token valid or auth disabled)
+```
+
+### How it works
+
+**Server** — A custom `TokenAuthenticationHandler` (ASP.NET Core `AuthenticationHandler`) checks the `Authorization: Bearer <token>` header against the `authToken` configured in `appsettings.json`. If `authToken` is empty (default), authentication is bypassed and all clients are allowed.
+
+**Client** — The Proxy sends the token via SignalR's built-in `AccessTokenProvider`, which sets the `Authorization: Bearer` header on the negotiate request.
+
+### Configuration
+
+| Setting | Default | Description |
+|---|---|---|
+| `authToken` | `""` (disabled) | Shared secret. Set the same value on both server and client to enforce auth. |
+
+Set `"authToken": "my-secret"` in both `TwitchGqlMockServer/appsettings.json` and `TwitchGqlProxy/appsettings.json`. Any client without the matching token gets a 401 on connect.
+
+### Per-hub authentication
+
+Authentication is applied per-hub via `.RequireAuthorization()` on the endpoint mapping. Hubs mapped without it are public.
+
+```csharp
+// Program.cs
+
+// Secured — clients need the bearer token
+app.MapHub<ProxyHub>("/hub").RequireAuthorization();
+
+// Public — no auth required
+app.MapHub<PublicHub>("/public");   // <-- any client can connect
+
+// Also public
+app.MapHub<AnotherHub>("/another").AllowAnonymous();
+```
+
+This makes it easy to add mixed-access endpoints: keep your production proxy hub locked down while exposing a public status/debug hub on the same server.
+
+---
+
 ## Configuration (TwitchGqlProxy)
 
 | Setting | Env Var | Default | Description |
 |---|---|---|---|
 | `signalrHubUrl` | `SIGNALR_HUB_URL` | `http://localhost:5000/hub` | MockServer SignalR endpoint |
 | `gqlEndpoint` | `GQL_ENDPOINT` | `https://gql.twitch.tv/gql` | Twitch GQL API |
-| `clientId` | `CLIENT_ID` | **(required)** | Twitch Client-Id header |
-| `channels` | `CHANNELS` | `backend.communityTab,backend.ViewerCards` | SignalR channels to listen on |
+| `clientId` | `CLIENT_ID` | **(required)** | Twitch Client-Id header. Set in `appsettings.json` or via env var. |
 | `minBatchSize` | `MIN_BATCH_SIZE` | `5` | Min batch before flush (debounce trigger) |
 | `maxBatchSize` | `MAX_BATCH_SIZE` | `20` | Max operations per GQL request |
 | `debounceMs` | `DEBOUNCE_MS` | `300` | Debounce timer ms |
 | `rateLimitPerMinute` | `RATE_LIMIT` | `5000` | Max requests per minute to GQL |
+| `authToken` | — | `""` (disabled) | Bearer token for SignalR hub auth |
 
-Settings are read from `appsettings.json` (in the output directory) with environment variables overriding. `CLIENT_ID` must always be set via env var.
+SignalR channels (`backend.communityTab`, `backend.ViewerCards`) are hardcoded in `ProxyService` — they are not configurable.
+
+Settings are read from `appsettings.json` (in the output directory) with environment variables overriding. `clientId` is required — set it in `appsettings.json` or pass it as the `CLIENT_ID` environment variable.
 
 ---
 
@@ -258,6 +329,14 @@ Then type commands at the prompt:
 
 ### Proxy
 
+Set `clientId` in `appsettings.json`, then:
+
+```
+dotnet run --project TwitchGqlProxy
+```
+
+Or via env var override:
+
 ```
 CLIENT_ID=your_twitch_client_id dotnet run --project TwitchGqlProxy
 ```
@@ -274,6 +353,7 @@ twitchscanapi-gql-remote/
 │   ├── Program.cs                  # ASP.NET entry, maps /hub
 │   ├── ProxyHub.cs                 # SignalR hub, tracks clients, logs responses
 │   ├── TestOperationService.cs     # Background service, stdin commands
+│   ├── TokenAuthenticationHandler.cs  # Bearer token auth for SignalR hub
 │   ├── TwitchGqlMockServer.csproj
 │   ├── appsettings.json
 │   └── Properties/

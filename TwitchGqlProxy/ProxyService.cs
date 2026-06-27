@@ -20,6 +20,7 @@ public sealed class ProxyService : IAsyncDisposable
     private int _pendingCount;
     private Timer? _debounceTimer;
 
+    private static readonly string[] Channels = ["backend.communityTab", "backend.ViewerCards"];
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -35,7 +36,11 @@ public sealed class ProxyService : IAsyncDisposable
         _httpClient.DefaultRequestHeaders.TryAddWithoutValidation("Client-Id", config.ClientId);
 
         _hubConnection = new HubConnectionBuilder()
-            .WithUrl(config.SignalrHubUrl)
+            .WithUrl(config.SignalrHubUrl, options =>
+            {
+                options.AccessTokenProvider = () =>
+                    Task.FromResult(string.IsNullOrEmpty(config.AuthToken) ? null : config.AuthToken);
+            })
             .WithAutomaticReconnect()
             .Build();
 
@@ -57,7 +62,7 @@ public sealed class ProxyService : IAsyncDisposable
             return Task.CompletedTask;
         };
 
-        foreach (var channel in config.Channels)
+        foreach (var channel in Channels)
         {
             var channelCopy = channel;
             _hubConnection.On(channelCopy, (JsonElement payload) =>
@@ -72,7 +77,7 @@ public sealed class ProxyService : IAsyncDisposable
         _logger.LogInformation("Connecting to SignalR hub at {Url}", _config.SignalrHubUrl);
         await _hubConnection.StartAsync(ct);
         _logger.LogInformation("Connected to SignalR hub, listening on channels: {Channels}",
-            string.Join(", ", _config.Channels));
+            string.Join(", ", Channels));
     }
 
     public async Task StopAsync()
@@ -382,18 +387,19 @@ public sealed record ProxyConfig
     public string SignalrHubUrl { get; init; } = "http://localhost:5000/hub";
     public string GqlEndpoint { get; init; } = "https://gql.twitch.tv/gql";
     public string ClientId { get; init; } = "";
-    public string[] Channels { get; init; } = ["backend.communityTab", "backend.ViewerCards"];
     public int MinBatchSize { get; init; } = 5;
     public int MaxBatchSize { get; init; } = 20;
     public int DebounceMs { get; init; } = 300;
     public int RateLimitPerMinute { get; init; } = 5000;
+    public string AuthToken { get; init; } = "";
 
     public static ProxyConfig FromConfiguration(IConfiguration configuration)
     {
         var config = configuration.Get<ProxyConfig>() ?? new ProxyConfig();
         if (string.IsNullOrEmpty(config.ClientId))
         {
-            throw new InvalidOperationException("CLIENT_ID environment variable is required");
+            throw new InvalidOperationException(
+                "ClientId is required. Set it in appsettings.json or via the CLIENT_ID environment variable.");
         }
         return config;
     }
