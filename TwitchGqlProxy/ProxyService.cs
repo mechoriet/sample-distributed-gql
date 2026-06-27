@@ -126,8 +126,16 @@ public sealed class ProxyService : IAsyncDisposable
                     operation = doc.RootElement.Clone();
                 }
 
-                _ = FlushBatchAsync([new BatchItem(signalrChannel, twitchChannel, operation)]);
-                _logger.LogInformation("  → CommunityTab [{Channel}] flushed immediately", twitchChannel);
+                var fanOut = _config.CommunityTabFanOut;
+                var items = new List<BatchItem>(fanOut);
+                for (int i = 0; i < fanOut; i++)
+                {
+                    items.Add(new BatchItem(signalrChannel, twitchChannel, operation));
+                }
+                _ = FlushBatchAsync(items);
+                _logger.LogInformation(
+                    "  → CommunityTab [{Channel}] flushed immediately (fan-out={FanOut})",
+                    twitchChannel, fanOut);
                 return;
 
             case "ViewerCard":
@@ -392,6 +400,7 @@ public sealed record ProxyConfig
     public int DebounceMs { get; init; } = 300;
     public int RateLimitPerMinute { get; init; } = 5000;
     public string AuthToken { get; init; } = "";
+    public int CommunityTabFanOut { get; init; } = 1;
 
     public static ProxyConfig FromConfiguration(IConfiguration configuration)
     {
