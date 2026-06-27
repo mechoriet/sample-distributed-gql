@@ -225,7 +225,7 @@ public sealed class ProxyService : IAsyncDisposable
             var requestBody = JsonSerializer.Serialize(requestArray, JsonOptions);
             var content = new StringContent(requestBody, Encoding.UTF8, "application/json");
 
-            await EnforceRateLimit();
+            await EnforceRateLimit(batch.Count);
 
             var response = await _httpClient.PostAsync(_config.GqlEndpoint, content);
             var responseBody = await response.Content.ReadAsStringAsync();
@@ -347,7 +347,7 @@ public sealed class ProxyService : IAsyncDisposable
     private readonly Queue<DateTime> _rateLimitTimestamps = new();
     private readonly object _rateLimitLock = new();
 
-    private async Task EnforceRateLimit()
+    private async Task EnforceRateLimit(int count = 1)
     {
         if (_config.RateLimitPerMinute <= 0)
             return;
@@ -355,6 +355,7 @@ public sealed class ProxyService : IAsyncDisposable
         while (true)
         {
             DateTime delayUntil = DateTime.MinValue;
+            int currentCount;
             lock (_rateLimitLock)
             {
                 var now = DateTime.UtcNow;
@@ -365,9 +366,14 @@ public sealed class ProxyService : IAsyncDisposable
                     _rateLimitTimestamps.Dequeue();
                 }
 
-                if (_rateLimitTimestamps.Count < _config.RateLimitPerMinute)
+                currentCount = _rateLimitTimestamps.Count;
+                var available = _config.RateLimitPerMinute - currentCount;
+                if (available >= count)
                 {
-                    _rateLimitTimestamps.Enqueue(now);
+                    for (int i = 0; i < count; i++)
+                    {
+                        _rateLimitTimestamps.Enqueue(now);
+                    }
                     return;
                 }
 
@@ -378,7 +384,8 @@ public sealed class ProxyService : IAsyncDisposable
             var delay = delayUntil - DateTime.UtcNow;
             if (delay > TimeSpan.Zero)
             {
-                _logger.LogWarning("Rate limit reached, delaying {DelayMs}ms", delay.TotalMilliseconds);
+                _logger.LogWarning("Rate limit reached ({Current}/{Limit}), need {Count} slots, delaying {DelayMs}ms",
+                    currentCount, _config.RateLimitPerMinute, count, delay.TotalMilliseconds);
                 await Task.Delay(delay);
             }
         }
